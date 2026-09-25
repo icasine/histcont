@@ -1,0 +1,41 @@
+name: Atualizar eventos.json (Calendário de Contagem)
+
+on:
+  schedule:
+    - cron: "0 19 * * *"  # todo dia às 16h de Brasília (19h UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: atualizar-eventos
+  cancel-in-progress: false
+
+# Link CSV da planilha publicada na web (Arquivo > Compartilhar > Publicar na web > aba Calendário > CSV).
+env:
+  CSV_CALENDARIO: https://docs.google.com/spreadsheets/d/e/2PACX-1vTSywf-r_8jXN3OObrTSGGfRAKSYc44_X7NdiFms1GSLVJiuSABMrOMKf8P8KlATDq52751YKD0N14t/pub?gid=2075107518&single=true&output=csv
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Gerar eventos.json
+        env: { CSV_URL: "${{ env.CSV_CALENDARIO }}" }
+        run: python scripts/gerar_eventos.py
+      - name: Salvar se houve mudança
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add eventos.json
+          if git diff --staged --quiet; then
+            echo "eventos.json não mudou."
+          else
+            git commit -m "Atualiza eventos.json da planilha"
+            git pull origin main --rebase
+            git push
+          fi
