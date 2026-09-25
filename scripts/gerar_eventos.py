@@ -1,15 +1,4 @@
-"""Gera eventos.json do Calendário de Contagem a partir da planilha publicada em CSV.
-
-Uso: CSV_URL=<link csv> python scripts/gerar_eventos.py   (ou: python scripts/gerar_eventos.py arquivo.csv)
-
-Cada coluna com nome de ano (2024, 2025, ...) vira uma ocorrência. Formatos aceitos na célula:
-  dd/mm/aaaa                  -> um dia
-  dd/mm/aaaa a dd/mm/aaaa     -> período (semana, mês, campanha)
-  mm/aaaa                     -> mês sem dia definido
-  aaaa                        -> ano sem data definida
-Célula vazia = a data não acontece (ou ainda não foi definida) naquele ano.
-Linhas com publicar diferente de "sim" ficam fora. obs_internas nunca vai para o JSON.
-"""
+"""Gera eventos.json (formato FullCalendar) a partir da planilha com colunas de anos."""
 import csv, io, json, os, re, sys, urllib.request
 from datetime import date, datetime, timedelta
 
@@ -21,7 +10,9 @@ def ler_linhas():
         with urllib.request.urlopen(fonte) as r:
             texto = r.read().decode("utf-8")
     else:
-        texto = open(fonte, encoding="utf-8").read()
+        with open(fonte, encoding="utf-8") as f:
+            texto = f.read()
+
     for n, l in enumerate(csv.DictReader(io.StringIO(texto)), start=2):
         l = {(k or "").strip(): (v or "").strip() for k, v in l.items()}
         l["_linha"] = n
@@ -38,8 +29,14 @@ def ler_data(s):
 def sim(v):
     return (v or "").strip().lower() in ("sim", "s", "true", "1", "x")
 
+def hora(v):
+    return v[:5] if v else ""
+
 def norma(l):
-    tipo, num, ano, art = l.get("tipo_norma", ""), l.get("numero_norma", ""), l.get("ano_norma", ""), l.get("artigo", "")
+    tipo = l.get("tipo_norma", "")
+    num = l.get("numero_norma", "")
+    ano = l.get("ano_norma", "")
+    art = l.get("artigo", "")
     if not tipo:
         return ""
     txt = tipo
@@ -51,27 +48,21 @@ def norma(l):
         txt += f", art. {art}"
     return txt
 
-def hora(v):
-    return v[:5] if v else ""
-
 linhas = [l for l in ler_linhas() if sim(l.get("publicar")) and l.get("titulo") and l.get("id")]
 anos = sorted(k for k in (linhas[0].keys() if linhas else []) if re.fullmatch(r"\d{4}", k))
-vistos, saida, total = set(), [], 0
+
+saida = []
 
 for l in linhas:
-    if l["id"] in vistos:
-        avisos.append(f'Linha {l["_linha"]}: id repetido "{l["id"]}"')
-    vistos.add(l["id"])
-    item = {
-        "id": l["id"],
-        "titulo": l["titulo"],
+    h_ini = hora(l.get("hora_inicio", ""))
+    h_fim = hora(l.get("hora_fim", ""))
+
+    props_base = {
         "tipo": l.get("tipo", ""),
         "categoria": l.get("categoria", ""),
         "nivel": l.get("nivel", ""),
         "tags": [t.strip() for t in l.get("tags", "").split(",") if t.strip()],
         "regra": l.get("regra_data", ""),
-        "hora_inicio": hora(l.get("hora_inicio", "")),
-        "hora_fim": hora(l.get("hora_fim", "")),
         "local": l.get("local", ""),
         "resumo": l.get("resumo", ""),
         "descricao": l.get("descricao", ""),
@@ -83,36 +74,67 @@ for l in linhas:
         "ano_origem": int(l["ano_origem"]) if l.get("ano_origem", "").isdigit() else None,
         "evidenciar": sim(l.get("evidenciar")),
         "relembrar": sim(l.get("relembrar")),
-        "datas": [],
     }
+
+    teve_data = False
+
     for a in anos:
         cel = l.get(a, "")
         if not cel:
             continue
+
         partes = [p.strip() for p in re.split(r"\s+a\s+", cel)]
         ini = ler_data(partes[0])
+
         if ini:
             fim = ler_data(partes[1]) if len(partes) > 1 else None
-            d = {"ano": int(a), "ini": ini.isoformat()}
+            ev = {
+                "id": f"{l['id']}-{a}",
+                "title": l["titulo"],
+                "allDay": not h_ini,
+                "start": ini.isoformat() + (f"T{h_ini}" if h_ini else ""),
+                "extendedProps": {**props_base, "precisao": "dia", "ano": int(a)},
+            }
             if fim and fim > ini:
-                d["fim"] = fim.isoformat()
+                if h_ini:
+                    ev["end"] = f"{fim.isoformat()}T{h_fim or h_ini}"
+                else:
+                    ev["end"] = (fim + timedelta(days=1)).isoformat()
+            saida.append(ev)
+            teve_data = True
         elif re.fullmatch(r"\d{1,2}/\d{4}", cel):
-            d = {"ano": int(a), "mes": int(cel.split("/")[0])}
+            mes = int(cel.split("/")[0])
+            saida.append({
+                "id": f"{l['id']}-{a}",
+                "title": l["titulo"],
+                "extendedProps": {**props_base, "precisao": "mes", "ano": int(a), "mes": mes},
+            })
+            teve_data = True
         elif re.fullmatch(r"\d{4}", cel):
-            d = {"ano": int(a)}
+            saida.append({
+                "id": f"{l['id']}-{a}",
+                "title": l["titulo"],
+                "extendedProps": {**props_base, "precisao": "ano", "ano": int(a)},
+            })
+            teve_data = True
         else:
-            avisos.append(f'Linha {l["_linha"]} ({l["id"]}), coluna {a}: data não reconhecida "{cel}"')
-            continue
-        item["datas"].append(d)
-    if not item["datas"]:
-        avisos.append(f'Linha {l["_linha"]} ({l["id"]}): nenhuma data preenchida nas colunas de ano')
-        continue
-    total += len(item["datas"])
-    saida.append(item)
+            avisos.append(f'Linha {l["_linha"]} ({l["id"]}), coluna {a}: formato não reconhecido "{cel}"')
+
+    if not teve_data:
+        avisos.append(f'Linha {l["_linha"]} ({l["id"]}): nenhuma data válida preenchida')
+
+def ordenacao(e):
+    if "start" in e:
+        return e["start"]
+    p = e["extendedProps"]
+    return f"{p['ano']:04d}-{(p.get('mes') or 1):02d}"
+
+saida.sort(key=ordenacao)
 
 with open("eventos.json", "w", encoding="utf-8") as f:
-    json.dump({"atualizado": date.today().isoformat(), "anos": [int(a) for a in anos], "itens": saida},
-              f, ensure_ascii=False, separators=(",", ":"))
+    json.dump(saida, f, ensure_ascii=False, indent=2)
+
 for a in avisos:
     print(f"::warning::{a}")
-print(f"{len(saida)} itens e {total} ocorrências gravados em eventos.json (anos {anos[0] if anos else '-'} a {anos[-1] if anos else '-'})")
+
+print(f"{len(saida)} ocorrências gravadas em eventos.json")
