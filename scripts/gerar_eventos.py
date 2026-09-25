@@ -100,6 +100,9 @@ for l in linhas:
                     ev["end"] = f"{fim.isoformat()}T{h_fim or h_ini}"
                 else:
                     ev["end"] = (fim + timedelta(days=1)).isoformat()
+            elif h_ini and h_fim:
+                ev["end"] = f"{ini.isoformat()}T{h_fim}"
+
             saida.append(ev)
             teve_data = True
         elif re.fullmatch(r"\d{1,2}/\d{4}", cel):
